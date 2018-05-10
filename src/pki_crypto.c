@@ -1830,4 +1830,190 @@ ssh_signature pki_do_sign_sessionid(const ssh_key key,
 }
 #endif /* WITH_SERVER */
 
+int pki_add_cert(ssh_key key,
+                 ssh_string cert_blob)
+{
+	ssh_string type_s = ssh_string_from_char(key->type_c);
+	if (type_s == NULL) {
+		return SSH_ERROR;
+	}
+	key->cert = ssh_buffer_new();
+	if (key->cert == NULL ||
+	    ssh_buffer_add_ssh_string(key->cert, type_s) != SSH_OK ||
+	    ssh_buffer_add_ssh_string(key->cert, cert_blob) != SSH_OK)
+	{
+		return SSH_ERROR;
+	}
+	return SSH_OK;
+}
+
+int pki_build_rsa(ssh_key key,
+                  ssh_string n,
+                  ssh_string e,
+                  ssh_string d,
+                  ssh_string p,
+                  ssh_string q)
+{
+	bignum* be = ssh_make_string_bn(e);
+	bignum* bn = ssh_make_string_bn(n);
+	bignum* bd = ssh_make_string_bn(d);
+	bignum* bp = ssh_make_string_bn(p);
+	bignum* bq = ssh_make_string_bn(q);
+	if (be == NULL || bn == NULL || bd == NULL || bp == NULL || bq == NULL) {
+		goto fail;
+	}
+
+	#if defined(HAVE_LIBGCRYPT)
+	return SSH_ERRROR;
+	#elif defined(HAVE_LIBMBEDCRYPTO)
+	return SSH_ERRROR;
+	#else
+
+	key->rsa = RSA_new();
+	if (key->rsa == NULL ||
+	    RSA_set0_key(key->rsa, bn, be, bd) != 1 ||
+		  RSA_set0_factors(key->rsa, bp, bq) != 1)
+	{
+#ifdef DEBUG_CRYPTO
+			SSH_LOG(SSH_LOG_WARN, "Failed building RSA key: %s", ERR_reason_error_string(ERR_get_error()));
+#endif
+		goto fail;
+	}
+	#endif
+	return SSH_OK;
+
+fail:
+	bignum_free(be);
+	bignum_free(bn);
+	bignum_free(bd);
+	bignum_free(bp);
+	bignum_free(bq);
+	ssh_key_clean(key);
+
+	return SSH_ERROR;
+}
+
+
+int pki_build_cert_blob_rsa(ssh_key key,
+                            ssh_string cert_blob,
+                            ssh_string d,
+                            ssh_string p,
+                            ssh_string q)
+{
+	#if defined(HAVE_LIBGCRYPT)
+	return SSH_ERRROR;
+	#elif defined(HAVE_LIBMBEDCRYPTO)
+	return SSH_ERRROR;
+	#else
+	if (pki_build_rsa(key, 0, 0, d, p, d) != SSH_OK ||
+		  pki_add_cert(key, cert_blob) != SSH_OK) {
+		return SSH_ERROR;
+	}
+	#endif
+	return SSH_OK;
+}
+
+int pki_build_dsa(ssh_key key,
+                  ssh_string p,
+                  ssh_string q,
+                  ssh_string g,
+                  ssh_string pubkey,
+                  ssh_string privkey)
+{
+	bignum* bp = ssh_make_string_bn(p);
+	bignum* bq = ssh_make_string_bn(q);
+	bignum* bg = ssh_make_string_bn(g);
+	bignum* bpubkey = ssh_make_string_bn(pubkey);
+	bignum* bprivkey = ssh_make_string_bn(privkey);
+	if (bp == NULL || bq == NULL ||
+			bg == NULL || bpubkey == NULL ||
+			bprivkey == NULL) {
+			goto fail;
+	}
+
+	#if defined(HAVE_LIBGCRYPT)
+	return SSH_ERROR;
+	#elif defined(HAVE_LIBMBEDCRYPTO)
+	return SSH_ERROR;
+	#else
+	key->dsa = DSA_new();
+	if (key->dsa == NULL ||
+	    DSA_set0_pqg(key->dsa, bp, bq, bg) != 1 ||
+	    DSA_set0_key(key->dsa, bpubkey, bprivkey) != 1)
+	{
+#ifdef DEBUG_CRYPTO
+			SSH_LOG(SSH_LOG_WARN, "Failed building DSA key: %s", ERR_reason_error_string(ERR_get_error()));
+#endif
+			goto fail;
+	}
+	#endif
+
+	return SSH_OK;
+
+	fail:
+
+	bignum_free(bp);
+	bignum_free(bq);
+	bignum_free(bg);
+	bignum_free(bpubkey);
+	bignum_free(bprivkey);
+	ssh_key_free(key);
+	return SSH_ERROR;
+}
+
+int pki_build_cert_blob_dsa(ssh_key key,
+                            ssh_string cert_blob,
+                            ssh_string priv_key)
+{
+	#if defined(HAVE_LIBGCRYPT)
+	#elif defined(HAVE_LIBMBEDCRYPTO)
+	#else
+	if (pki_build_dsa(key, 0, 0, 0, 0, priv_key) != SSH_OK ||
+	    pki_add_cert(key, cert_blob) != SSH_OK)
+	{
+		return SSH_ERROR;
+	}
+	#endif
+	return SSH_OK;
+}
+
+int pki_build_ecdsa(ssh_key key,
+                    const char* curve_name,
+                    const ssh_string e,
+	                  const ssh_string priv_key)
+{
+	bignum bprivkey = ssh_make_string_bn(priv_key);
+	if (bprivkey == NULL) {
+		goto fail;
+	}
+
+	#if defined(HAVE_LIBGCRYPT)
+	#elif defined(HAVE_LIBMBEDCRYPTO)
+	#else
+	#endif
+	const int nid = pki_key_ecdsa_nid_from_name(curve_name);
+	if (nid == -1) {
+		goto fail;
+	}
+
+	if (pki_pubkey_build_ecdsa(key, nid, e) != SSH_OK) {
+		goto fail;
+	}
+  if (EC_KEY_set_private_key(key->ecdsa, bprivkey) != 1)
+		{
+#ifdef DEBUG_CRYPTO
+			SSH_LOG(SSH_LOG_WARN, "Failed building ECDSA key: %s", ERR_reason_error_string(ERR_get_error()));
+#endif
+			goto fail;
+		}
+	ssh_print_hexa("ECDSA e", ssh_string_data(e), ssh_string_len(e));
+	ssh_print_hexa("ECDSA privatekey", ssh_string_data(priv_key), ssh_string_len(priv_key));
+	return SSH_OK;
+
+fail:
+	bignum_free(e);
+	bignum_free(bprivkey);
+	ssh_key_free(key);
+	return SSH_ERROR;
+}
 #endif /* _PKI_CRYPTO_H */

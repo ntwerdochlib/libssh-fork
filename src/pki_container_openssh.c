@@ -37,6 +37,7 @@
 #include "libssh/pki_priv.h"
 #include "libssh/buffer.h"
 
+#include "libcrypto-compat.h"
 
 /**
  * @internal
@@ -92,38 +93,163 @@ static int pki_openssh_import_privkey_blob(ssh_buffer key_blob_buffer,
 
     switch (type) {
     case SSH_KEYTYPE_ED25519:
+			#define SSH_KEYTYPE_ED25519_CLEANUP() \
+        ssh_string_secure_free(privkey); \
+        ssh_string_secure_free(pubkey);
+
         rc = ssh_buffer_unpack(key_blob_buffer, "SS", &pubkey, &privkey);
         if (rc != SSH_OK){
             SSH_LOG(SSH_LOG_WARN, "Unpack error");
+						SSH_KEYTYPE_ED25519_CLEANUP();
             goto fail;
         }
         if(ssh_string_len(pubkey) != ED25519_PK_LEN ||
                 ssh_string_len(privkey) != ED25519_SK_LEN){
             SSH_LOG(SSH_LOG_WARN, "Invalid ed25519 key len");
+						SSH_KEYTYPE_ED25519_CLEANUP();
             goto fail;
         }
         key->ed25519_privkey = malloc(ED25519_SK_LEN);
         key->ed25519_pubkey = malloc(ED25519_PK_LEN);
         if(key->ed25519_privkey == NULL || key->ed25519_pubkey == NULL){
+						SSH_KEYTYPE_ED25519_CLEANUP();
             goto fail;
         }
         memcpy(key->ed25519_privkey, ssh_string_data(privkey), ED25519_SK_LEN);
         memcpy(key->ed25519_pubkey, ssh_string_data(pubkey), ED25519_PK_LEN);
         explicit_bzero(ssh_string_data(privkey), ED25519_SK_LEN);
-        SAFE_FREE(privkey);
-        SAFE_FREE(pubkey);
+				SSH_KEYTYPE_ED25519_CLEANUP();
         break;
-    case SSH_KEYTYPE_DSS_CERT01:
-    case SSH_KEYTYPE_DSS:
-        /* p,q,g,pub_key,priv_key */
+
     case SSH_KEYTYPE_RSA_CERT01:
-    case SSH_KEYTYPE_RSA:
-        /* n,e,d,iqmp,p,q */
+		{
+			#define SSH_KEYTYPE_RSA_CERT01_CLEANUP() \
+				ssh_string_secure_free(d); \
+				ssh_string_secure_free(iqmp); \
+				ssh_string_secure_free(p); \
+				ssh_string_secure_free(q);
+
+        /* certblob,d,iqmp,p,q */
+        ssh_string cert_blob, d, iqmp, p, q;
+        rc = ssh_buffer_unpack(key_blob_buffer, "SSSSS", &cert_blob, &d, &iqmp, &p, &q);
+        if (rc != SSH_OK) {
+          SSH_LOG(SSH_LOG_WARN, "Unpack error");
+					SSH_KEYTYPE_RSA_CERT01_CLEANUP();
+          goto fail;
+        }
+				rc = pki_build_cert_blob_rsa(key, cert_blob, d, p, q);
+				if (rc != SSH_OK) {
+					SSH_KEYTYPE_RSA_CERT01_CLEANUP();
+					goto fail;
+				}
+				SSH_KEYTYPE_RSA_CERT01_CLEANUP();
+        break;
+    }
+
     case SSH_KEYTYPE_RSA1:
+    case SSH_KEYTYPE_RSA:
+    {
+			#define SSH_KEYTYPE_RSA_CLEANUP() \
+				ssh_string_secure_free(n); \
+				ssh_string_secure_free(e); \
+				ssh_string_secure_free(d); \
+				ssh_string_secure_free(iqmp); \
+				ssh_string_secure_free(p); \
+				ssh_string_secure_free(q);
+
+			/* n,e,d,iqmp,p,q */
+			/* n, e -> public */
+			/* d -> private */
+			/* iqmp -> CRT (ignore) */
+			/* p, q -> primes */
+			ssh_string n, e, d, iqmp, p, q;
+			rc = ssh_buffer_unpack(key_blob_buffer, "SSSSSS", &n, &e, &d, &iqmp, &p, &q);
+			if (rc != SSH_OK) {
+				SSH_LOG(SSH_LOG_WARN, "Unpack error");
+				SSH_KEYTYPE_RSA_CLEANUP();
+				goto fail;
+			}
+			rc = pki_build_rsa(key, n, e, d, p, q);
+			if (rc != SSH_OK) {
+				SSH_KEYTYPE_RSA_CLEANUP();
+				goto fail;
+			}
+			SSH_KEYTYPE_RSA_CLEANUP();
+			break;
+		}
+
+    case SSH_KEYTYPE_DSS_CERT01:
+		{
+			#define SSH_KEYTYPE_DSS_CERT01_CLEANUP() \
+				ssh_string_secure_free(cert_blob); \
+				ssh_string_secure_free(privkey);
+
+			/* p,q,g,pub_key,priv_key */
+			ssh_string cert_blob, privkey;
+			rc = ssh_buffer_unpack(key_blob_buffer, "SS", &cert_blob, &privkey);
+			if (rc != SSH_OK) {
+				SSH_LOG(SSH_LOG_WARN, "Unpack error");
+				SSH_KEYTYPE_DSS_CERT01_CLEANUP();
+				goto fail;
+			}
+			rc = pki_build_cert_blob_dsa(key, cert_blob, privkey);
+			if (rc != SSH_OK) {
+				SSH_KEYTYPE_DSS_CERT01_CLEANUP();
+				goto fail;
+			}
+			SSH_KEYTYPE_DSS_CERT01_CLEANUP();
+			break;
+    }
+
+    case SSH_KEYTYPE_DSS:
+		{
+			#define SSH_KEYTYPE_DSS_CLEANUP() \
+				ssh_string_secure_free(p); \
+				ssh_string_secure_free(q); \
+				ssh_string_secure_free(g); \
+				ssh_string_secure_free(pubkey); \
+				ssh_string_secure_free(privkey)
+
+			/* p,q,g,pub_key,priv_key */
+			ssh_string p, q, g, pubkey, privkey;
+			rc = ssh_buffer_unpack(key_blob_buffer, "SSSSS", &p, &q, &g, &pubkey, &privkey);
+			if (rc != SSH_OK) {
+				SSH_LOG(SSH_LOG_WARN, "Unpack error");
+				SSH_KEYTYPE_DSS_CLEANUP();
+				goto fail;
+			}
+			rc = pki_build_dsa(key, p, q, g, pubkey, privkey);
+			if (rc != SSH_OK) {
+				SSH_KEYTYPE_DSS_CLEANUP();
+				goto fail;
+			}
+			SSH_KEYTYPE_DSS_CLEANUP();
+			break;
+    }
+
     case SSH_KEYTYPE_ECDSA:
-        /* curve_name, group, privkey */
-        SSH_LOG(SSH_LOG_WARN, "Unsupported private key method %s", key->type_c);
-        goto fail;
+		{
+			#define SSH_KEYTYPE_ECDSA_CLEANUP() \
+				ssh_string_secure_free(e); \
+				ssh_string_secure_free(privkey);
+
+			/* curve_name, e, privkey */
+			char* curve_name;
+			ssh_string e, privkey;
+			int rc = ssh_buffer_unpack(key_blob_buffer, "sSS", &curve_name, &e, &privkey);
+			if (rc != SSH_OK) {
+				SSH_LOG(SSH_LOG_WARN, "Unpack error");
+				SSH_KEYTYPE_ECDSA_CLEANUP();
+				goto fail;
+			}
+			rc = pki_build_ecdsa(key, curve_name, e, privkey);
+			if (rc != SSH_OK) {
+				SSH_KEYTYPE_ECDSA_CLEANUP();
+				goto fail;
+			}
+			break;
+		}
+
     case SSH_KEYTYPE_UNKNOWN:
         SSH_LOG(SSH_LOG_WARN, "Unknown private key protocol %s", key->type_c);
         goto fail;

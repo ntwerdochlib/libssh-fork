@@ -68,8 +68,34 @@ ssh_string pki_private_key_to_pem(const ssh_key key,
                                   const char *passphrase,
                                   ssh_auth_callback auth_fn,
                                   void *auth_data);
+int pki_build_rsa(ssh_key key,
+                  ssh_string n,
+                  ssh_string e,
+                  ssh_string d,
+                  ssh_string p,
+                  ssh_string q);
+int pki_build_cert_blob_rsa(ssh_key key,
+                            ssh_string cert_blob,
+                            ssh_string d,
+                            ssh_string p,
+                            ssh_string q);
+int pki_build_dsa(ssh_key key,
+                  ssh_string p,
+                  ssh_string q,
+                  ssh_string g,
+                  ssh_string pub_key,
+                  ssh_string priv_key);
+int pki_build_cert_blob_dsa(ssh_key key,
+                            ssh_string cert_blob,
+                            ssh_string priv_key);
+int pki_build_ecdsa(ssh_key key,
+                    const char* curve_name,
+                    const ssh_string e,
+	                  const ssh_string privkey);
 
 /* SSH Public Key Functions */
+int pki_add_cert(ssh_key key,
+                 ssh_string cert_blob);
 int pki_pubkey_build_dss(ssh_key key,
                          ssh_string p,
                          ssh_string q,

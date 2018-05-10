@@ -1069,6 +1069,22 @@ void explicit_bzero(void *s, size_t n)
 }
 #endif /* !HAVE_EXPLICIT_BZERO */
 
+void ssh_string_secure_zero(ssh_string s)
+{
+	if (s == NULL || ssh_string_data(s) == NULL) {
+		return;
+	}
+	explicit_bzero(ssh_string_data(s), ssh_string_len(s));
+}
+
+void ssh_string_secure_free(ssh_string s)
+{
+	if (s == NULL || ssh_string_data(s) == NULL) {
+		return;
+	}
+	ssh_string_secure_zero(s);
+	SAFE_FREE(s);
+}
 /** @} */
 
 /* vim: set ts=4 sw=4 et cindent: */
